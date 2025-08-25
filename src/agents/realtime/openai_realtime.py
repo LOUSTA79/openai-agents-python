@@ -6,7 +6,7 @@ import inspect
 import json
 import os
 from datetime import datetime
-from typing import Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal, Union
 
 import pydantic
 import websockets
@@ -52,11 +52,12 @@ from openai.types.beta.realtime.session_update_event import (
     SessionTracingTracingConfiguration as OpenAISessionTracingConfiguration,
     SessionUpdateEvent as OpenAISessionUpdateEvent,
 )
-from pydantic import TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter
 from typing_extensions import assert_never
 from websockets.asyncio.client import ClientConnection
 
 from agents.handoffs import Handoff
+from agents.realtime._default_tracker import ModelAudioTracker
 from agents.tool import FunctionTool, Tool
 from agents.util._types import MaybeAwaitable
 
@@ -72,6 +73,8 @@ from .model import (
     RealtimeModel,
     RealtimeModelConfig,
     RealtimeModelListener,
+    RealtimePlaybackState,
+    RealtimePlaybackTracker,
 )
 from .model_events import (
     RealtimeModelAudioDoneEvent,
@@ -80,9 +83,11 @@ from .model_events import (
     RealtimeModelErrorEvent,
     RealtimeModelEvent,
     RealtimeModelExceptionEvent,
+    RealtimeModelInputAudioTimeoutTriggeredEvent,
     RealtimeModelInputAudioTranscriptionCompletedEvent,
     RealtimeModelItemDeletedEvent,
     RealtimeModelItemUpdatedEvent,
+    RealtimeModelRawServerEvent,
     RealtimeModelToolCallEvent,
     RealtimeModelTranscriptDeltaEvent,
     RealtimeModelTurnEndedEvent,
@@ -124,6 +129,32 @@ async def get_api_key(key: str | Callable[[], MaybeAwaitable[str]] | None) -> st
     return os.getenv("OPENAI_API_KEY")
 
 
+class _InputAudioBufferTimeoutTriggeredEvent(BaseModel):
+    type: Literal["input_audio_buffer.timeout_triggered"]
+    event_id: str
+    audio_start_ms: int
+    audio_end_ms: int
+    item_id: str
+
+
+AllRealtimeServerEvents = Annotated[
+    Union[
+        OpenAIRealtimeServerEvent,
+        _InputAudioBufferTimeoutTriggeredEvent,
+    ],
+    Field(discriminator="type"),
+]
+
+ServerEventTypeAdapter: TypeAdapter[AllRealtimeServerEvents] | None = None
+
+
+def get_server_event_type_adapter() -> TypeAdapter[AllRealtimeServerEvents]:
+    global ServerEventTypeAdapter
+    if not ServerEventTypeAdapter:
+        ServerEventTypeAdapter = TypeAdapter(AllRealtimeServerEvents)
+    return ServerEventTypeAdapter
+
+
 class OpenAIRealtimeWebSocketModel(RealtimeModel):
     """A model that uses OpenAI's WebSocket API."""
 
@@ -133,11 +164,12 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
         self._websocket_task: asyncio.Task[None] | None = None
         self._listeners: list[RealtimeModelListener] = []
         self._current_item_id: str | None = None
-        self._audio_start_time: datetime | None = None
-        self._audio_length_ms: float = 0.0
+        self._audio_state_tracker: ModelAudioTracker = ModelAudioTracker()
         self._ongoing_response: bool = False
-        self._current_audio_content_index: int | None = None
         self._tracing_config: RealtimeModelTracingConfig | Literal["auto"] | None = None
+        self._playback_tracker: RealtimePlaybackTracker | None = None
+        self._created_session: OpenAISessionObject | None = None
+        self._server_event_type_adapter = get_server_event_type_adapter()
 
     async def connect(self, options: RealtimeModelConfig) -> None:
         """Establish a connection to the model and keep it alive."""
@@ -145,6 +177,8 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
         assert self._websocket_task is None, "Already connected"
 
         model_settings: RealtimeSessionModelSettings = options.get("initial_model_settings", {})
+
+        self._playback_tracker = options.get("playback_tracker", None)
 
         self.model = model_settings.get("model_name", self.model)
         api_key = await get_api_key(options.get("api_key"))
@@ -164,7 +198,10 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
             "OpenAI-Beta": "realtime=v1",
         }
         self._websocket = await websockets.connect(
-            url, user_agent_header=_USER_AGENT, additional_headers=headers
+            url,
+            user_agent_header=_USER_AGENT,
+            additional_headers=headers,
+            max_size=None,  # Allow any size of message
         )
         self._websocket_task = asyncio.create_task(self._listen_for_messages())
         await self._update_session_config(model_settings)
@@ -220,7 +257,7 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
 
         except websockets.exceptions.ConnectionClosedOK:
             # Normal connection closure - no exception event needed
-            logger.info("WebSocket connection closed normally")
+            logger.debug("WebSocket connection closed normally")
         except websockets.exceptions.ConnectionClosed as e:
             await self._emit_event(
                 RealtimeModelExceptionEvent(
@@ -294,26 +331,76 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
         if event.start_response:
             await self._send_raw_message(OpenAIResponseCreateEvent(type="response.create"))
 
+    def _get_playback_state(self) -> RealtimePlaybackState:
+        if self._playback_tracker:
+            return self._playback_tracker.get_state()
+
+        if last_audio_item_id := self._audio_state_tracker.get_last_audio_item():
+            item_id, item_content_index = last_audio_item_id
+            audio_state = self._audio_state_tracker.get_state(item_id, item_content_index)
+            if audio_state:
+                elapsed_ms = (
+                    datetime.now() - audio_state.initial_received_time
+                ).total_seconds() * 1000
+                return {
+                    "current_item_id": item_id,
+                    "current_item_content_index": item_content_index,
+                    "elapsed_ms": elapsed_ms,
+                }
+
+        return {
+            "current_item_id": None,
+            "current_item_content_index": None,
+            "elapsed_ms": None,
+        }
+
     async def _send_interrupt(self, event: RealtimeModelSendInterrupt) -> None:
-        if not self._current_item_id or not self._audio_start_time:
+        playback_state = self._get_playback_state()
+        current_item_id = playback_state.get("current_item_id")
+        current_item_content_index = playback_state.get("current_item_content_index")
+        elapsed_ms = playback_state.get("elapsed_ms")
+        if current_item_id is None or elapsed_ms is None:
+            logger.debug(
+                "Skipping interrupt. "
+                f"Item id: {current_item_id}, "
+                f"elapsed ms: {elapsed_ms}, "
+                f"content index: {current_item_content_index}"
+            )
             return
 
-        await self._cancel_response()
-
-        elapsed_time_ms = (datetime.now() - self._audio_start_time).total_seconds() * 1000
-        if elapsed_time_ms > 0 and elapsed_time_ms < self._audio_length_ms:
-            await self._emit_event(RealtimeModelAudioInterruptedEvent())
+        current_item_content_index = current_item_content_index or 0
+        if elapsed_ms > 0:
+            await self._emit_event(
+                RealtimeModelAudioInterruptedEvent(
+                    item_id=current_item_id,
+                    content_index=current_item_content_index,
+                )
+            )
             converted = _ConversionHelper.convert_interrupt(
-                self._current_item_id,
-                self._current_audio_content_index or 0,
-                int(elapsed_time_ms),
+                current_item_id,
+                current_item_content_index,
+                int(elapsed_ms),
             )
             await self._send_raw_message(converted)
+        else:
+            logger.debug(
+                "Didn't interrupt bc elapsed ms is < 0. "
+                f"Item id: {current_item_id}, "
+                f"elapsed ms: {elapsed_ms}, "
+                f"content index: {current_item_content_index}"
+            )
 
-        self._current_item_id = None
-        self._audio_start_time = None
-        self._audio_length_ms = 0.0
-        self._current_audio_content_index = None
+        automatic_response_cancellation_enabled = (
+            self._created_session
+            and self._created_session.turn_detection
+            and self._created_session.turn_detection.interrupt_response
+        )
+        if not automatic_response_cancellation_enabled:
+            await self._cancel_response()
+
+        self._audio_state_tracker.on_interrupted()
+        if self._playback_tracker:
+            self._playback_tracker.on_interrupted()
 
     async def _send_session_update(self, event: RealtimeModelSendSessionUpdate) -> None:
         """Send a session update to the model."""
@@ -321,22 +408,20 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
 
     async def _handle_audio_delta(self, parsed: ResponseAudioDeltaEvent) -> None:
         """Handle audio delta events and update audio tracking state."""
-        self._current_audio_content_index = parsed.content_index
         self._current_item_id = parsed.item_id
-        if self._audio_start_time is None:
-            self._audio_start_time = datetime.now()
-            self._audio_length_ms = 0.0
 
         audio_bytes = base64.b64decode(parsed.delta)
-        # Calculate audio length in ms using 24KHz pcm16le
-        self._audio_length_ms += self._calculate_audio_length_ms(audio_bytes)
-        await self._emit_event(
-            RealtimeModelAudioEvent(data=audio_bytes, response_id=parsed.response_id)
-        )
 
-    def _calculate_audio_length_ms(self, audio_bytes: bytes) -> float:
-        """Calculate audio length in milliseconds for 24KHz PCM16LE format."""
-        return len(audio_bytes) / 24 / 2
+        self._audio_state_tracker.on_audio_delta(parsed.item_id, parsed.content_index, audio_bytes)
+
+        await self._emit_event(
+            RealtimeModelAudioEvent(
+                data=audio_bytes,
+                response_id=parsed.response_id,
+                item_id=parsed.item_id,
+                content_index=parsed.content_index,
+            )
+        )
 
     async def _handle_output_item(self, item: ConversationItem) -> None:
         """Handle response output item events (function calls and messages)."""
@@ -401,12 +486,13 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
             self._ongoing_response = False
 
     async def _handle_ws_event(self, event: dict[str, Any]):
+        await self._emit_event(RealtimeModelRawServerEvent(data=event))
         try:
             if "previous_item_id" in event and event["previous_item_id"] is None:
                 event["previous_item_id"] = ""  # TODO (rm) remove
-            parsed: OpenAIRealtimeServerEvent = TypeAdapter(
-                OpenAIRealtimeServerEvent
-            ).validate_python(event)
+            parsed: AllRealtimeServerEvents = self._server_event_type_adapter.validate_python(
+                event
+            )
         except pydantic.ValidationError as e:
             logger.error(f"Failed to validate server event: {event}", exc_info=True)
             await self._emit_event(
@@ -429,7 +515,12 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
         if parsed.type == "response.audio.delta":
             await self._handle_audio_delta(parsed)
         elif parsed.type == "response.audio.done":
-            await self._emit_event(RealtimeModelAudioDoneEvent())
+            await self._emit_event(
+                RealtimeModelAudioDoneEvent(
+                    item_id=parsed.item_id,
+                    content_index=parsed.content_index,
+                )
+            )
         elif parsed.type == "input_audio_buffer.speech_started":
             await self._send_interrupt(RealtimeModelSendInterrupt())
         elif parsed.type == "response.created":
@@ -440,6 +531,9 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
             await self._emit_event(RealtimeModelTurnEndedEvent())
         elif parsed.type == "session.created":
             await self._send_tracing_config(self._tracing_config)
+            self._update_created_session(parsed.session)  # type: ignore
+        elif parsed.type == "session.updated":
+            self._update_created_session(parsed.session)  # type: ignore
         elif parsed.type == "error":
             await self._emit_event(RealtimeModelErrorEvent(error=parsed.error))
         elif parsed.type == "conversation.item.deleted":
@@ -488,6 +582,19 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
             or parsed.type == "response.output_item.done"
         ):
             await self._handle_output_item(parsed.item)
+        elif parsed.type == "input_audio_buffer.timeout_triggered":
+            await self._emit_event(RealtimeModelInputAudioTimeoutTriggeredEvent(
+                item_id=parsed.item_id,
+                audio_start_ms=parsed.audio_start_ms,
+                audio_end_ms=parsed.audio_end_ms,
+            ))
+
+    def _update_created_session(self, session: OpenAISessionObject) -> None:
+        self._created_session = session
+        if session.output_audio_format:
+            self._audio_state_tracker.set_audio_format(session.output_audio_format)
+            if self._playback_tracker:
+                self._playback_tracker.set_audio_format(session.output_audio_format)
 
     async def _update_session_config(self, model_settings: RealtimeSessionModelSettings) -> None:
         session_config = self._get_session_config(model_settings)
@@ -506,6 +613,7 @@ class OpenAIRealtimeWebSocketModel(RealtimeModel):
                 or DEFAULT_MODEL_SETTINGS.get("model_name")
             ),
             voice=model_settings.get("voice", DEFAULT_MODEL_SETTINGS.get("voice")),
+            speed=model_settings.get("speed", None),
             modalities=model_settings.get("modalities", DEFAULT_MODEL_SETTINGS.get("modalities")),
             input_audio_format=model_settings.get(
                 "input_audio_format",

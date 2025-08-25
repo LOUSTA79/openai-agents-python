@@ -76,7 +76,7 @@ class FuncSchema:
 
 @dataclass
 class FuncDocumentation:
-    """Contains metadata about a python function, extracted from its docstring."""
+    """Contains metadata about a Python function, extracted from its docstring."""
 
     name: str
     """The name of the function, via `__name__`."""
@@ -194,7 +194,7 @@ def function_schema(
     strict_json_schema: bool = True,
 ) -> FuncSchema:
     """
-    Given a python function, extracts a `FuncSchema` from it, capturing the name, description,
+    Given a Python function, extracts a `FuncSchema` from it, capturing the name, description,
     parameter descriptions, and other metadata.
 
     Args:
@@ -208,7 +208,7 @@ def function_schema(
             descriptions.
         strict_json_schema: Whether the JSON schema is in strict mode. If True, we'll ensure that
             the schema adheres to the "strict" standard the OpenAI API expects. We **strongly**
-            recommend setting this to True, as it increases the likelihood of the LLM providing
+            recommend setting this to True, as it increases the likelihood of the LLM producing
             correct JSON input.
 
     Returns:
@@ -291,7 +291,7 @@ def function_schema(
             # Default factory to empty list
             fields[name] = (
                 ann,
-                Field(default_factory=list, description=field_description),  # type: ignore
+                Field(default_factory=list, description=field_description),
             )
 
         elif param.kind == param.VAR_KEYWORD:
@@ -309,7 +309,7 @@ def function_schema(
 
             fields[name] = (
                 ann,
-                Field(default_factory=dict, description=field_description),  # type: ignore
+                Field(default_factory=dict, description=field_description),
             )
 
         else:

@@ -115,6 +115,12 @@ class RealtimeAudioEnd:
     info: RealtimeEventInfo
     """Common info for all events, such as the context."""
 
+    item_id: str
+    """The ID of the item containing audio."""
+
+    content_index: int
+    """The index of the audio content in `item.content`"""
+
     type: Literal["audio_end"] = "audio_end"
 
 
@@ -124,6 +130,12 @@ class RealtimeAudio:
 
     audio: RealtimeModelAudioEvent
     """The audio event from the model layer."""
+
+    item_id: str
+    """The ID of the item containing audio."""
+
+    content_index: int
+    """The index of the audio content in `item.content`"""
 
     info: RealtimeEventInfo
     """Common info for all events, such as the context."""
@@ -139,6 +151,12 @@ class RealtimeAudioInterrupted:
 
     info: RealtimeEventInfo
     """Common info for all events, such as the context."""
+
+    item_id: str
+    """The ID of the item containing audio."""
+
+    content_index: int
+    """The index of the audio content in `item.content`"""
 
     type: Literal["audio_interrupted"] = "audio_interrupted"
 
@@ -198,6 +216,16 @@ class RealtimeGuardrailTripped:
     type: Literal["guardrail_tripped"] = "guardrail_tripped"
 
 
+@dataclass
+class RealtimeInputAudioTimeoutTriggered:
+    """Called when the model detects a period of inactivity/silence from the user."""
+
+    info: RealtimeEventInfo
+    """Common info for all events, such as the context."""
+
+    type: Literal["input_audio_timeout_triggered"] = "input_audio_timeout_triggered"
+
+
 RealtimeSessionEvent: TypeAlias = Union[
     RealtimeAgentStartEvent,
     RealtimeAgentEndEvent,
@@ -212,5 +240,6 @@ RealtimeSessionEvent: TypeAlias = Union[
     RealtimeHistoryUpdated,
     RealtimeHistoryAdded,
     RealtimeGuardrailTripped,
+    RealtimeInputAudioTimeoutTriggered,
 ]
 """An event emitted by the realtime session."""

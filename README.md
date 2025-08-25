@@ -19,29 +19,28 @@ Explore the [examples](examples) directory to see the SDK in action, and read ou
 
 ## Get started
 
-1. Set up your Python environment
+To get started, set up your Python environment (Python 3.9 or newer required), and then install OpenAI Agents SDK package.
 
--   Option A: Using venv (traditional method)
-
-```bash
-python -m venv env
-source env/bin/activate  # On Windows: env\Scripts\activate
-```
-
--   Option B: Using uv (recommended)
+### venv
 
 ```bash
-uv venv
+python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-2. Install Agents SDK
-
-```bash
 pip install openai-agents
 ```
 
 For voice support, install with the optional `voice` group: `pip install 'openai-agents[voice]'`.
+
+### uv
+
+If you're familiar with [uv](https://docs.astral.sh/uv/), using the tool would be even similar:
+
+```bash
+uv init
+uv add openai-agents
+```
+
+For voice support, install with the optional `voice` group: `uv add 'openai-agents[voice]'`.
 
 ## Hello world example
 
@@ -156,6 +155,10 @@ The Agents SDK is designed to be highly flexible, allowing you to model a wide r
 ## Tracing
 
 The Agents SDK automatically traces your agent runs, making it easy to track and debug the behavior of your agents. Tracing is extensible by design, supporting custom spans and a wide variety of external destinations, including [Logfire](https://logfire.pydantic.dev/docs/integrations/llms/openai/#openai-agents), [AgentOps](https://docs.agentops.ai/v1/integrations/agentssdk), [Braintrust](https://braintrust.dev/docs/guides/traces/integrations#openai-agents-sdk), [Scorecard](https://docs.scorecard.io/docs/documentation/features/tracing#openai-agents-sdk-integration), and [Keywords AI](https://docs.keywordsai.co/integration/development-frameworks/openai-agent). For more details about how to customize or disable tracing, see [Tracing](http://openai.github.io/openai-agents-python/tracing), which also includes a larger list of [external tracing processors](http://openai.github.io/openai-agents-python/tracing/#external-tracing-processors-list).
+
+## Long running agents & human-in-the-loop
+
+You can use the Agents SDK [Temporal](https://temporal.io/) integration to run durable, long-running workflows, including human-in-the-loop tasks. View a demo of Temporal and the Agents SDK working in action to complete long-running tasks [in this video](https://www.youtube.com/watch?v=fFBZqzT4DD8), and [view docs here](https://github.com/temporalio/sdk-python/tree/main/temporalio/contrib/openai_agents).
 
 ## Sessions
 
@@ -299,6 +302,7 @@ make format-check # run style checker
 We'd like to acknowledge the excellent work of the open-source community, especially:
 
 -   [Pydantic](https://docs.pydantic.dev/latest/) (data validation) and [PydanticAI](https://ai.pydantic.dev/) (advanced agent framework)
+-   [LiteLLM](https://github.com/BerriAI/litellm) (unified interface for 100+ LLMs)
 -   [MkDocs](https://github.com/squidfunk/mkdocs-material)
 -   [Griffe](https://github.com/mkdocstrings/griffe)
 -   [uv](https://github.com/astral-sh/uv) and [ruff](https://github.com/astral-sh/ruff)

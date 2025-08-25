@@ -4,9 +4,9 @@ search:
 ---
 # セッション
 
-Agents SDK には、複数回のエージェント実行にわたる会話履歴を自動的に保持する組み込みのセッションメモリが用意されています。これにより、ターン間で `.to_input_list()` を手動で扱う必要がなくなります。
+Agents SDK は、複数の エージェント 実行にまたがって会話履歴を自動的に保持する組み込みのセッションメモリを提供し、ターン間で `.to_input_list()` を手動で扱う必要をなくします。
 
-Sessions は特定のセッションの会話履歴を保存し、手動でメモリを管理しなくてもエージェントがコンテキストを維持できるようにします。チャットアプリケーションやマルチターンの会話を構築する際、エージェントに以前のやり取りを記憶させたい場合に特に便利です。
+セッションは特定のセッションの会話履歴を保存し、明示的な手動メモリ管理なしで エージェント がコンテキストを維持できるようにします。これは、チャットアプリケーションや、以前のやり取りを エージェント に記憶させたいマルチターンの会話を構築する際に特に有用です。
 
 ## クイックスタート
 
@@ -51,9 +51,9 @@ print(result.final_output)  # "Approximately 39 million"
 
 セッションメモリが有効な場合:
 
-1. **各実行前**: Runner はセッションの会話履歴を自動で取得し、それを入力項目の先頭に追加します。  
-2. **各実行後**: 実行中に生成された新しい項目 (ユーザー入力、アシスタントの応答、ツール呼び出しなど) はすべて自動でセッションに保存されます。  
-3. **コンテキスト保持**: 同じセッションでの後続の実行には完全な会話履歴が含まれるため、エージェントはコンテキストを維持できます。  
+1.  **各実行の前**: ランナーはセッションの会話履歴を自動的に取得し、入力アイテムの先頭に付加します。
+2.  **各実行の後**: 実行中に生成されたすべての新規アイテム（ユーザー入力、アシスタントの応答、ツール呼び出しなど）は自動的にセッションに保存されます。
+3.  **コンテキストの保持**: 同一セッションでの後続の実行には完全な会話履歴が含まれ、エージェント はコンテキストを維持できます。
 
 これにより、`.to_input_list()` を手動で呼び出したり、実行間で会話状態を管理したりする必要がなくなります。
 
@@ -61,7 +61,7 @@ print(result.final_output)  # "Approximately 39 million"
 
 ### 基本操作
 
-Sessions では、会話履歴を管理するための操作がいくつか提供されています:
+セッションは会話履歴を管理するためのいくつかの操作をサポートします:
 
 ```python
 from agents import SQLiteSession
@@ -86,9 +86,9 @@ print(last_item)  # {"role": "assistant", "content": "Hi there!"}
 await session.clear_session()
 ```
 
-### 修正のための `pop_item` の利用
+### 修正のための `pop_item` の使用
 
-`pop_item` メソッドは、会話の最後の項目を取り消したり、修正したりしたい場合に特に役立ちます:
+`pop_item` メソッドは、会話の最後のアイテムを取り消したり修正したりしたい場合に特に便利です:
 
 ```python
 from agents import Agent, Runner, SQLiteSession
@@ -119,7 +119,7 @@ print(f"Agent: {result.final_output}")
 
 ## メモリオプション
 
-### メモリなし (デフォルト)
+### メモリなし（デフォルト）
 
 ```python
 # Default behavior - no session memory
@@ -168,11 +168,69 @@ result2 = await Runner.run(
 )
 ```
 
+### SQLAlchemy ベースのセッション
+
+より高度なユースケースでは、SQLAlchemy ベースのセッションバックエンドを使用できます。これにより、セッションストレージとして SQLAlchemy がサポートする任意のデータベース（PostgreSQL、MySQL、SQLite など）を使用できます。
+
+** 例 1: `from_url` とインメモリ SQLite の使用 **
+
+これは最も簡単なはじめ方で、開発およびテストに最適です。
+
+```python
+import asyncio
+from agents import Agent, Runner
+from agents.extensions.memory.sqlalchemy_session import SQLAlchemySession
+
+async def main():
+    agent = Agent("Assistant")
+    session = SQLAlchemySession.from_url(
+        "user-123",
+        url="sqlite+aiosqlite:///:memory:",
+        create_tables=True,  # Auto-create tables for the demo
+    )
+
+    result = await Runner.run(agent, "Hello", session=session)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+** 例 2: 既存の SQLAlchemy エンジンを使用 **
+
+本番アプリケーションでは、すでに SQLAlchemy の `AsyncEngine` インスタンスを持っていることが多いです。これをセッションに直接渡せます。
+
+```python
+import asyncio
+from agents import Agent, Runner
+from agents.extensions.memory.sqlalchemy_session import SQLAlchemySession
+from sqlalchemy.ext.asyncio import create_async_engine
+
+async def main():
+    # In your application, you would use your existing engine
+    engine = create_async_engine("sqlite+aiosqlite:///conversations.db")
+
+    agent = Agent("Assistant")
+    session = SQLAlchemySession(
+        "user-456",
+        engine=engine,
+        create_tables=True,  # Auto-create tables for the demo
+    )
+
+    result = await Runner.run(agent, "Hello", session=session)
+    print(result.final_output)
+
+    await engine.dispose()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+
 ## カスタムメモリ実装
 
-独自のセッションメモリを実装するには、[`Session`][agents.memory.session.Session] プロトコルに従うクラスを作成します:
+[`Session`][agents.memory.session.Session] プロトコルに従うクラスを作成することで、独自のセッションメモリを実装できます:
 
-````python
+```python
 from agents.memory import Session
 from typing import List
 
@@ -210,35 +268,37 @@ result = await Runner.run(
     "Hello",
     session=MyCustomSession("my_session")
 )
+```
 
-## Session management
+## セッション管理
 
-### Session ID naming
+### セッション ID の命名
 
-Use meaningful session IDs that help you organize conversations:
+会話を整理しやすくする意味のあるセッション ID を使用します:
 
--   User-based: `"user_12345"`
--   Thread-based: `"thread_abc123"`
--   Context-based: `"support_ticket_456"`
+-   ユーザー基準: `"user_12345"`
+-   スレッド基準: `"thread_abc123"`
+-   コンテキスト基準: `"support_ticket_456"`
 
-### Memory persistence
+### メモリ永続化
 
--   Use in-memory SQLite (`SQLiteSession("session_id")`) for temporary conversations
--   Use file-based SQLite (`SQLiteSession("session_id", "path/to/db.sqlite")`) for persistent conversations
--   Consider implementing custom session backends for production systems (Redis, PostgreSQL, etc.)
+-   一時的な会話にはインメモリ SQLite（`SQLiteSession("session_id")`）を使用
+-   永続的な会話にはファイルベース SQLite（`SQLiteSession("session_id", "path/to/db.sqlite")`）を使用
+-   SQLAlchemy がサポートする既存データベースを持つ本番システムには SQLAlchemy ベースのセッション（`SQLAlchemySession("session_id", engine=engine, create_tables=True)`）を使用
+-   さらに高度なユースケース向けに、他の本番システム（Redis、Django など）用のカスタムセッションバックエンドの実装を検討
 
-### Session management
+### セッション管理
 
 ```python
-# 会話をリセットしたい場合にセッションをクリア
+# Clear a session when conversation should start fresh
 await session.clear_session()
 
-# 異なるエージェントが同じセッションを共有可能
+# Different agents can share the same session
 support_agent = Agent(name="Support")
 billing_agent = Agent(name="Billing")
 session = SQLiteSession("user_123")
 
-# どちらのエージェントも同じ会話履歴を参照
+# Both agents will see the same conversation history
 result1 = await Runner.run(
     support_agent,
     "Help me with my account",
@@ -249,11 +309,11 @@ result2 = await Runner.run(
     "What are my charges?",
     session=session
 )
-````
+```
 
-## Complete example
+## 完全なサンプル
 
-Here's a complete example showing session memory in action:
+セッションメモリが動作する完全な例を次に示します:
 
 ```python
 import asyncio
@@ -261,19 +321,19 @@ from agents import Agent, Runner, SQLiteSession
 
 
 async def main():
-    # エージェントを作成
+    # Create an agent
     agent = Agent(
         name="Assistant",
         instructions="Reply very concisely.",
     )
 
-    # 複数回の実行で永続化されるセッションインスタンスを作成
+    # Create a session instance that will persist across runs
     session = SQLiteSession("conversation_123", "conversation_history.db")
 
     print("=== Sessions Example ===")
     print("The agent will remember previous messages automatically.\n")
 
-    # 1 ターン目
+    # First turn
     print("First turn:")
     print("User: What city is the Golden Gate Bridge in?")
     result = await Runner.run(
@@ -284,7 +344,7 @@ async def main():
     print(f"Assistant: {result.final_output}")
     print()
 
-    # 2 ターン目 - エージェントは前回の会話を記憶
+    # Second turn - the agent will remember the previous conversation
     print("Second turn:")
     print("User: What state is it in?")
     result = await Runner.run(
@@ -295,7 +355,7 @@ async def main():
     print(f"Assistant: {result.final_output}")
     print()
 
-    # 3 ターン目 - 会話を継続
+    # Third turn - continuing the conversation
     print("Third turn:")
     print("User: What's the population of that state?")
     result = await Runner.run(
@@ -313,3 +373,12 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
+
+## API リファレンス
+
+詳細な API ドキュメントは次を参照してください:
+
+-   [`Session`][agents.memory.Session] - プロトコルインターフェース
+-   [`SQLiteSession`][agents.memory.SQLiteSession] - SQLite 実装
+-   [`SQLAlchemySession`][agents.extensions.memory.sqlalchemy_session.SQLAlchemySession] - SQLAlchemy ベースの実装
